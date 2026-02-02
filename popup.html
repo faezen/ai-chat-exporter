@@ -3,6 +3,7 @@
   popup.html
   Extension popup UI for AI Chat Exporter
   - Checkbox to hide/show export button on chat pages
+  - Update notification link
   - Simple, accessible layout
 -->
 <html lang="en">
@@ -10,9 +11,23 @@
   <meta charset="UTF-8">
   <title>AI Chat Exporter</title>
   <style>
-    body { font-family: sans-serif; margin: 16px; }
-    label { display: flex; align-items: center; gap: 8px; }
-    button { margin-top: 12px; }
+    body { font-family: sans-serif; margin: 16px; min-width: 200px; }
+    label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+    .update-link {
+      display: none;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #eee;
+      font-size: 0.9em;
+    }
+    .update-link a {
+      color: #1a73e8;
+      text-decoration: none;
+      font-weight: bold;
+    }
+    .update-link a:hover {
+      text-decoration: underline;
+    }
   </style>
 </head>
 <body>
@@ -21,6 +36,12 @@
     <input type="checkbox" id="hideExportBtn">
     Hide export button
   </label>
+
+  <!-- Update Notification Container -->
+  <div id="update-notification" class="update-link">
+    <a href="#" id="update-link" target="_blank">Update Available</a>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html>
