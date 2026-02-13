@@ -384,10 +384,15 @@
     }
 
     async buildMarkdown(turns, title) {
-      let markdown = title
-        ? `# ${title}\n\n`
-        : '# ChatGPT Chat Export\n\n';
-      markdown += `> Exported on: ${new Date().toLocaleString()}\n\n---\n\n`;
+      const parts = [];
+
+      if (title) {
+        parts.push(`# ${title}\n\n`);
+      } else {
+        parts.push('# ChatGPT Chat Export\n\n');
+      }
+
+      parts.push(`> Exported on: ${new Date().toLocaleString()}\n\n---\n\n`);
 
       for (let i = 0; i < turns.length; i++) {
         const turn = turns[i];
@@ -398,9 +403,11 @@
         const userCheckbox = turn.querySelector(`.${CONFIG.CHECKBOX_CLASS}.user`);
         if (userHeading && userCheckbox?.checked) {
           const userContent = userHeading.nextElementSibling?.textContent?.trim();
-          markdown += userContent
-            ? `## 👤 You\n\n${userContent}\n\n`
-            : `## 👤 You\n\n[Could not read your message for turn ${i + 1}.]\n\n`;
+          if (userContent) {
+            parts.push(`## 👤 You\n\n${userContent}\n\n`);
+          } else {
+            parts.push(`## 👤 You\n\n[Could not read your message for turn ${i + 1}.]\n\n`);
+          }
         }
 
         const modelHeading = turn.querySelector(CONFIG.SELECTORS.MODEL_HEADING);
@@ -409,18 +416,20 @@
           const copyBtn = turn.querySelector(CONFIG.SELECTORS.COPY_BUTTON);
           if (copyBtn) {
             const clipboardText = await this.copyModelResponse(copyBtn);
-            markdown += clipboardText
-              ? `## 🤖 ChatGPT\n\n${clipboardText}\n\n`
-              : `## 🤖 ChatGPT\n\n[Could not copy the response for turn ${i + 1}.]\n\n`;
+            if (clipboardText) {
+              parts.push(`## 🤖 ChatGPT\n\n${clipboardText}\n\n`);
+            } else {
+              parts.push(`## 🤖 ChatGPT\n\n[Could not copy the response for turn ${i + 1}.]\n\n`);
+            }
           } else {
-            markdown += `## 🤖 ChatGPT\n\n[Copy button not available for turn ${i + 1}.]\n\n`;
+            parts.push(`## 🤖 ChatGPT\n\n[Copy button not available for turn ${i + 1}.]\n\n`);
           }
         }
 
-        markdown += '---\n\n';
+        parts.push('---\n\n');
       }
 
-      return markdown;
+      return parts.join('');
     }
 
     async export(markdown, mode, filenameBase) {
