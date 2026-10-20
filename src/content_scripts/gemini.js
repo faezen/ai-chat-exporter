@@ -1,7 +1,7 @@
 /**
  * Gemini Chat Exporter - Gemini content script
  * Exports Gemini chat conversations to Markdown with LaTeX preservation
- * Version 4.0.0 - DOM-based extraction (no clipboard dependency)
+ * Version 4.1.0 - DOM-based extraction, JSON export, and Improved Scrolling
  */
 
 (function() {
@@ -26,11 +26,12 @@
     },
     
     TIMING: {
-      SCROLL_DELAY: 2000,
+      SCROLL_DELAY: 200,
+      SCROLL_STEP: 500,
       POPUP_DURATION: 900,
       NOTIFICATION_CLEANUP_DELAY: 1000,
-      MAX_SCROLL_ATTEMPTS: 60,
-      MAX_STABLE_SCROLLS: 4
+      MAX_SCROLL_ATTEMPTS: 200, // Increased due to smaller steps
+      MAX_STABLE_SCROLLS: 5
     },
     
     STYLES: {
@@ -170,24 +171,41 @@
 
       let stableScrolls = 0;
       let scrollAttempts = 0;
-      let lastScrollTop = null;
+      let lastScrollTop = -1;
+
+      // Initial check to see where we are
+      if (scrollContainer.scrollTop === 0) {
+        // Already at top? Might need to jiggle to be sure
+      }
 
       while (stableScrolls < CONFIG.TIMING.MAX_STABLE_SCROLLS && 
              scrollAttempts < CONFIG.TIMING.MAX_SCROLL_ATTEMPTS) {
-        const currentTurnCount = document.querySelectorAll(CONFIG.SELECTORS.CONVERSATION_TURN).length;
-        scrollContainer.scrollTop = 0;
+
+        const currentScrollTop = scrollContainer.scrollTop;
+
+        // Incremental scroll up
+        if (currentScrollTop > 0) {
+           scrollContainer.scrollTop = Math.max(0, currentScrollTop - CONFIG.TIMING.SCROLL_STEP);
+        } else {
+           // Ensure we stick to 0 for a bit to trigger loading
+           scrollContainer.scrollTop = 0;
+        }
+
         await DOMUtils.sleep(CONFIG.TIMING.SCROLL_DELAY);
         
-        const scrollTop = scrollContainer.scrollTop;
-        const newTurnCount = document.querySelectorAll(CONFIG.SELECTORS.CONVERSATION_TURN).length;
+        const newScrollTop = scrollContainer.scrollTop;
+        const currentTurnCount = document.querySelectorAll(CONFIG.SELECTORS.CONVERSATION_TURN).length;
         
-        if (newTurnCount === currentTurnCount && (lastScrollTop === scrollTop || scrollTop === 0)) {
-          stableScrolls++;
+        // Check if we are stuck at 0 (top) and no new content is loading
+        if (newScrollTop === 0 && lastScrollTop === 0) {
+           stableScrolls++;
+        } else if (newScrollTop === 0 && lastScrollTop !== 0) {
+           stableScrolls = 0; // Just reached top
         } else {
-          stableScrolls = 0;
+           stableScrolls = 0; // Still scrolling or content loaded pushing us down
         }
         
-        lastScrollTop = scrollTop;
+        lastScrollTop = newScrollTop;
         scrollAttempts++;
       }
     }
@@ -199,11 +217,20 @@
   
   class FileExportService {
     static downloadMarkdown(markdown, filenameBase) {
-      const blob = new Blob([markdown], { type: 'text/markdown' });
+      this._download(markdown, filenameBase, 'md', 'text/markdown');
+    }
+
+    static downloadJSON(data, filenameBase) {
+      const jsonStr = JSON.stringify(data, null, 2);
+      this._download(jsonStr, filenameBase, 'json', 'application/json');
+    }
+
+    static _download(content, filenameBase, extension, mimeType) {
+      const blob = new Blob([content], { type: mimeType });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${filenameBase}.md`;
+      a.download = `${filenameBase}.${extension}`;
       document.body.appendChild(a);
       a.click();
       setTimeout(() => {
@@ -554,6 +581,10 @@
             <input type="radio" name="${CONFIG.EXPORT_MODE_NAME}" value="file" checked>
             Export as file
           </label>
+          <label style="margin-right:10px;">
+            <input type="radio" name="${CONFIG.EXPORT_MODE_NAME}" value="json">
+            Export as JSON
+          </label>
           <label>
             <input type="radio" name="${CONFIG.EXPORT_MODE_NAME}" value="clipboard">
             Export to clipboard
@@ -568,7 +599,7 @@
                  value="">
           <span style="display:block;font-size:0.95em;color:#888;margin-top:2px;">
             Optional. Leave blank to use chat title or timestamp. 
-            Only <b>.md</b> (Markdown) files are supported. Do not include an extension.
+            Do not include an extension.
           </span>
         </div>
         <div style="margin-top:14px;">
@@ -636,127 +667,6 @@
     }
   }
 
-  function tableToMarkdown(table, service) {
-    const rows = Array.from(table.querySelectorAll('tr'));
-    if (!rows.length) return '';
-
-    const toCells = row => Array.from(row.querySelectorAll('th,td'))
-      .map(cell => service.turndown(cell.innerHTML).replace(/\n+/g, ' ').trim());
-
-    const header = toCells(rows[0]);
-    const separator = header.map(() => '---');
-    const body = rows.slice(1).map(toCells);
-
-    const lines = [
-      `| ${header.join(' | ')} |`,
-      `| ${separator.join(' | ')} |`,
-      ...body.map(r => `| ${r.join(' | ')} |`)
-    ];
-
-    return `${lines.join('\n')}\n\n`;
-  }
-
-  function inlineText(node) {
-    if (!node) return '';
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
-
-    if (node.nodeType !== Node.ELEMENT_NODE) return '';
-
-    const el = node;
-    if (el.matches(CONFIG.MATH_INLINE_SELECTOR)) {
-      const latex = el.getAttribute('data-math') || '';
-      return `$${latex}$`;
-    }
-
-    const tag = el.tagName.toLowerCase();
-    if (tag === 'br') return '\n';
-    if (tag === 'b' || tag === 'strong') {
-      return `**${Array.from(el.childNodes).map(inlineText).join('')}**`;
-    }
-    if (tag === 'i' || tag === 'em') {
-      return `*${Array.from(el.childNodes).map(inlineText).join('')}*`;
-    }
-    if (tag === 'code') {
-      return `\`${el.textContent || ''}\``;
-    }
-
-    return Array.from(el.childNodes).map(inlineText).join('');
-  }
-
-  function blockText(el) {
-    if (!el) return '';
-
-    if (el.nodeType === Node.TEXT_NODE) {
-      return (el.textContent || '').trim();
-    }
-
-    if (el.nodeType !== Node.ELEMENT_NODE) return '';
-
-    const tag = el.tagName.toLowerCase();
-
-    if (el.matches(CONFIG.MATH_BLOCK_SELECTOR)) {
-      const latex = el.getAttribute('data-math') || '';
-      return `$$${latex}$$\n\n`;
-    }
-
-    switch (tag) {
-      case 'h1': return `# ${inlineText(el)}\n\n`;
-      case 'h2': return `## ${inlineText(el)}\n\n`;
-      case 'h3': return `### ${inlineText(el)}\n\n`;
-      case 'h4': return `#### ${inlineText(el)}\n\n`;
-      case 'h5': return `##### ${inlineText(el)}\n\n`;
-      case 'h6': return `###### ${inlineText(el)}\n\n`;
-      case 'p': return `${inlineText(el)}\n\n`;
-      case 'hr': return `---\n\n`;
-      case 'blockquote': {
-        const lines = Array.from(el.childNodes).map(blockText).join('').trim().split('\n');
-        return lines.map(line => line ? `> ${line}` : '>').join('\n') + '\n\n';
-      }
-      case 'pre': {
-        const code = el.textContent || '';
-        return `\
-\
-\
-${code}\n\
-\
-\n`;
-      }
-      case 'ul': {
-        const items = Array.from(el.querySelectorAll(':scope > li'))
-          .map(li => `- ${inlineText(li).trim()}`)
-          .join('\n');
-        return `${items}\n\n`;
-      }
-      case 'ol': {
-        const items = Array.from(el.querySelectorAll(':scope > li'))
-          .map((li, i) => `${i + 1}. ${inlineText(li).trim()}`)
-          .join('\n');
-        return `${items}\n\n`;
-      }
-      case 'table': {
-        const rows = Array.from(el.querySelectorAll('tr'));
-        if (!rows.length) return '';
-        const cells = row => Array.from(row.querySelectorAll('th,td'))
-          .map(cell => inlineText(cell).replace(/\n/g, ' ').trim());
-        const header = cells(rows[0]);
-        const sep = header.map(() => '---');
-        const body = rows.slice(1).map(r => cells(r));
-        const lines = [
-          `| ${header.join(' | ')} |`,
-          `| ${sep.join(' | ')} |`,
-          ...body.map(r => `| ${r.join(' | ')} |`)
-        ];
-        return `${lines.join('\n')}\n\n`;
-      }
-      case 'div':
-      case 'section':
-      case 'article':
-      default: {
-        return Array.from(el.childNodes).map(blockText).join('');
-      }
-    }
-  }
-
   // ============================================================================
   // EXPORT SERVICE
   // ============================================================================
@@ -811,6 +721,56 @@ ${code}\n\
       return markdown;
     }
 
+    async buildJSON(turns, conversationTitle) {
+      const data = {
+        title: conversationTitle || CONFIG.DEFAULT_FILENAME,
+        exported_at: DateUtils.getLocaleString(),
+        messages: []
+      };
+
+      for (let i = 0; i < turns.length; i++) {
+        const turn = turns[i];
+        DOMUtils.createNotification(`Processing message ${i + 1} of ${turns.length}...`);
+
+        // User message
+        const userQueryElem = turn.querySelector(CONFIG.SELECTORS.USER_QUERY);
+        if (userQueryElem) {
+          const cb = userQueryElem.querySelector(`.${CONFIG.CHECKBOX_CLASS}`);
+          if (cb?.checked) {
+            const userQuery = this.markdownConverter.extractUserQuery(userQueryElem);
+            if (userQuery) {
+              data.messages.push({
+                role: 'user',
+                content: userQuery
+              });
+            }
+          }
+        }
+
+        // Model response
+        const modelRespElem = turn.querySelector(CONFIG.SELECTORS.MODEL_RESPONSE);
+        if (modelRespElem) {
+          const cb = modelRespElem.querySelector(`.${CONFIG.CHECKBOX_CLASS}`);
+          if (cb?.checked) {
+            const modelResponse = this.markdownConverter.extractModelResponse(modelRespElem);
+            if (modelResponse) {
+              data.messages.push({
+                role: 'model',
+                content: modelResponse
+              });
+            } else {
+               data.messages.push({
+                role: 'model',
+                content: "[Note: Could not extract model response.]"
+              });
+            }
+          }
+        }
+      }
+
+      return data;
+    }
+
     async execute(exportMode, customFilename) {
       try {
         // Load all messages
@@ -826,14 +786,20 @@ ${code}\n\
           return;
         }
 
-        // Get title and build markdown
+        // Get title
         const conversationTitle = FilenameService.getConversationTitle();
-        const markdown = await this.buildMarkdown(turns, conversationTitle);
 
         // Export based on mode
         if (exportMode === 'clipboard') {
+          const markdown = await this.buildMarkdown(turns, conversationTitle);
           await FileExportService.exportToClipboard(markdown);
+        } else if (exportMode === 'json') {
+          const jsonData = await this.buildJSON(turns, conversationTitle);
+          const filename = FilenameService.generate(customFilename, conversationTitle);
+          FileExportService.downloadJSON(jsonData, filename);
         } else {
+          // Default: file (markdown)
+          const markdown = await this.buildMarkdown(turns, conversationTitle);
           const filename = FilenameService.generate(customFilename, conversationTitle);
           FileExportService.downloadMarkdown(markdown, filename);
         }
@@ -876,9 +842,16 @@ ${code}\n\
     setupFilenameRowToggle() {
       const updateFilenameRow = () => {
         const fileRow = this.dropdown.querySelector('#gemini-filename-row');
+        // Show filename row if mode is 'file' OR 'json'
         const fileRadio = this.dropdown.querySelector(`input[name="${CONFIG.EXPORT_MODE_NAME}"][value="file"]`);
-        if (fileRow && fileRadio) {
-          fileRow.style.display = fileRadio.checked ? 'block' : 'none';
+        const jsonRadio = this.dropdown.querySelector(`input[name="${CONFIG.EXPORT_MODE_NAME}"][value="json"]`);
+
+        let shouldShow = false;
+        if (fileRadio && fileRadio.checked) shouldShow = true;
+        if (jsonRadio && jsonRadio.checked) shouldShow = true;
+
+        if (fileRow) {
+          fileRow.style.display = shouldShow ? 'block' : 'none';
         }
       };
 
@@ -935,7 +908,7 @@ ${code}\n\
 
       try {
         const exportMode = this.dropdown.querySelector(`input[name="${CONFIG.EXPORT_MODE_NAME}"]:checked`)?.value || 'file';
-        const customFilename = exportMode === 'file' 
+        const customFilename = (exportMode === 'file' || exportMode === 'json')
           ? this.dropdown.querySelector(`#${CONFIG.FILENAME_INPUT_ID}`)?.value.trim() || ''
           : '';
 
@@ -947,7 +920,7 @@ ${code}\n\
         this.checkboxManager.removeAll();
         this.selectionManager.reset();
         
-        if (exportMode === 'file') {
+        if (exportMode === 'file' || exportMode === 'json') {
           const filenameInput = this.dropdown.querySelector(`#${CONFIG.FILENAME_INPUT_ID}`);
           if (filenameInput) filenameInput.value = '';
         }
